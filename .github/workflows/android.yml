@@ -74,6 +74,27 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      - name: Bump compileSdk/AGP/Gradle for Android 15 (androidx.core 1.15.0 requires compileSdk 35)
+        # @capacitor-community/admob pulls in play-services-ads, which
+        # transitively resolves to androidx.core(-ktx) 1.15.0 regardless of
+        # the androidxCoreKTXVersion admob itself declares (Gradle picks the
+        # highest version among all transitive deps) - and that artifact's
+        # AAR metadata requires compiling against API 35+. Capacitor 6's
+        # template still defaults to compileSdk 34 and ships AGP 8.2.1,
+        # whose own max *supported* compileSdk is 34, so compileSdk alone
+        # can't just be bumped - AGP and the Gradle wrapper have to move
+        # together to versions that actually support API 35.
+        run: |
+          set -e
+          sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle
+          sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle
+          sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.7.2'/" android/build.gradle
+          sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+          grep -q "compileSdkVersion = 35" android/variables.gradle
+          grep -q "gradle:8.7.2" android/build.gradle
+          grep -q "gradle-8.9-all.zip" android/gradle/wrapper/gradle-wrapper.properties
+          echo "compileSdk/AGP/Gradle bumped to 35 / 8.7.2 / 8.9"
+
       - name: Generate App Icons
         run: |
           npm install sharp
@@ -193,6 +214,27 @@ jobs:
 
       - name: Add Android platform
         run: npx cap add android
+
+      - name: Bump compileSdk/AGP/Gradle for Android 15 (androidx.core 1.15.0 requires compileSdk 35)
+        # @capacitor-community/admob pulls in play-services-ads, which
+        # transitively resolves to androidx.core(-ktx) 1.15.0 regardless of
+        # the androidxCoreKTXVersion admob itself declares (Gradle picks the
+        # highest version among all transitive deps) - and that artifact's
+        # AAR metadata requires compiling against API 35+. Capacitor 6's
+        # template still defaults to compileSdk 34 and ships AGP 8.2.1,
+        # whose own max *supported* compileSdk is 34, so compileSdk alone
+        # can't just be bumped - AGP and the Gradle wrapper have to move
+        # together to versions that actually support API 35.
+        run: |
+          set -e
+          sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle
+          sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle
+          sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.7.2'/" android/build.gradle
+          sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+          grep -q "compileSdkVersion = 35" android/variables.gradle
+          grep -q "gradle:8.7.2" android/build.gradle
+          grep -q "gradle-8.9-all.zip" android/gradle/wrapper/gradle-wrapper.properties
+          echo "compileSdk/AGP/Gradle bumped to 35 / 8.7.2 / 8.9"
 
       - name: Generate App Icons
         run: |
