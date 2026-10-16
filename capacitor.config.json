@@ -1,0 +1,18 @@
+{
+  "appId": "com.hasila.vocab",
+  "appName": "حصيلتي",
+  "webDir": "dist",
+  "backgroundColor": "#16302B",
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "AdMob": {
+      "androidAppId": "ca-app-pub-1668741011095023~9376063574"
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_notify",
+      "iconColor": "#1F3D36"
+    }
+  }
+}
