@@ -74,7 +74,7 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Bump compileSdk/AGP/Gradle for Android 15 (androidx.core 1.15.0 requires compileSdk 35)
+      - name: Bump compileSdk/AGP/Gradle/minSdk for Android 15 + Billing Library 9
         # @capacitor-community/admob pulls in play-services-ads, which
         # transitively resolves to androidx.core(-ktx) 1.15.0 regardless of
         # the androidxCoreKTXVersion admob itself declares (Gradle picks the
@@ -84,16 +84,25 @@ jobs:
         # whose own max *supported* compileSdk is 34, so compileSdk alone
         # can't just be bumped - AGP and the Gradle wrapper have to move
         # together to versions that actually support API 35.
+        #
+        # Separately, cordova-plugin-purchase pulls in
+        # com.android.billingclient:billing 9.0.0, whose own AndroidManifest
+        # declares minSdkVersion 23 - higher than Capacitor 6's template
+        # default of minSdkVersion 22. The manifest merger fails the build
+        # if the app's minSdk is lower than a library's, so minSdk has to
+        # move to 23 too (Android 6.0+ - effectively all real devices today).
         run: |
           set -e
           sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle
           sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle
+          sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle
           sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.7.2'/" android/build.gradle
           sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
           grep -q "compileSdkVersion = 35" android/variables.gradle
+          grep -q "minSdkVersion = 23" android/variables.gradle
           grep -q "gradle:8.7.2" android/build.gradle
           grep -q "gradle-8.9-all.zip" android/gradle/wrapper/gradle-wrapper.properties
-          echo "compileSdk/AGP/Gradle bumped to 35 / 8.7.2 / 8.9"
+          echo "compileSdk/AGP/Gradle/minSdk bumped to 35 / 8.7.2 / 8.9 / 23"
 
       - name: Generate App Icons
         run: |
@@ -215,7 +224,7 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Bump compileSdk/AGP/Gradle for Android 15 (androidx.core 1.15.0 requires compileSdk 35)
+      - name: Bump compileSdk/AGP/Gradle/minSdk for Android 15 + Billing Library 9
         # @capacitor-community/admob pulls in play-services-ads, which
         # transitively resolves to androidx.core(-ktx) 1.15.0 regardless of
         # the androidxCoreKTXVersion admob itself declares (Gradle picks the
@@ -225,16 +234,25 @@ jobs:
         # whose own max *supported* compileSdk is 34, so compileSdk alone
         # can't just be bumped - AGP and the Gradle wrapper have to move
         # together to versions that actually support API 35.
+        #
+        # Separately, cordova-plugin-purchase pulls in
+        # com.android.billingclient:billing 9.0.0, whose own AndroidManifest
+        # declares minSdkVersion 23 - higher than Capacitor 6's template
+        # default of minSdkVersion 22. The manifest merger fails the build
+        # if the app's minSdk is lower than a library's, so minSdk has to
+        # move to 23 too (Android 6.0+ - effectively all real devices today).
         run: |
           set -e
           sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle
           sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle
+          sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle
           sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.7.2'/" android/build.gradle
           sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
           grep -q "compileSdkVersion = 35" android/variables.gradle
+          grep -q "minSdkVersion = 23" android/variables.gradle
           grep -q "gradle:8.7.2" android/build.gradle
           grep -q "gradle-8.9-all.zip" android/gradle/wrapper/gradle-wrapper.properties
-          echo "compileSdk/AGP/Gradle bumped to 35 / 8.7.2 / 8.9"
+          echo "compileSdk/AGP/Gradle/minSdk bumped to 35 / 8.7.2 / 8.9 / 23"
 
       - name: Generate App Icons
         run: |
