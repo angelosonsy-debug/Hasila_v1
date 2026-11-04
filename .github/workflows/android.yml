@@ -90,19 +90,23 @@ jobs:
         # declares minSdkVersion 23 - higher than Capacitor 6's template
         # default of minSdkVersion 22. The manifest merger fails the build
         # if the app's minSdk is lower than a library's, so minSdk has to
-        # move to 23 too (Android 6.0+ - effectively all real devices today).
+        # move up too. We go straight to 24 (Android 7.0+, ~99% of active
+        # devices) rather than stopping at 23, because Play Console's
+        # upload-time check for its "automatic app protection" feature
+        # (tamper/integrity protection added to the AAB at publish time)
+        # itself requires minSdk 24+ and rejects anything lower at upload.
         run: |
           set -e
           sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle
           sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle
-          sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle
+          sed -i 's/minSdkVersion = 22/minSdkVersion = 24/' android/variables.gradle
           sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.7.2'/" android/build.gradle
           sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
           grep -q "compileSdkVersion = 35" android/variables.gradle
-          grep -q "minSdkVersion = 23" android/variables.gradle
+          grep -q "minSdkVersion = 24" android/variables.gradle
           grep -q "gradle:8.7.2" android/build.gradle
           grep -q "gradle-8.9-all.zip" android/gradle/wrapper/gradle-wrapper.properties
-          echo "compileSdk/AGP/Gradle/minSdk bumped to 35 / 8.7.2 / 8.9 / 23"
+          echo "compileSdk/AGP/Gradle/minSdk bumped to 35 / 8.7.2 / 8.9 / 24"
 
       - name: Generate App Icons
         run: |
@@ -240,19 +244,23 @@ jobs:
         # declares minSdkVersion 23 - higher than Capacitor 6's template
         # default of minSdkVersion 22. The manifest merger fails the build
         # if the app's minSdk is lower than a library's, so minSdk has to
-        # move to 23 too (Android 6.0+ - effectively all real devices today).
+        # move up too. We go straight to 24 (Android 7.0+, ~99% of active
+        # devices) rather than stopping at 23, because Play Console's
+        # upload-time check for its "automatic app protection" feature
+        # (tamper/integrity protection added to the AAB at publish time)
+        # itself requires minSdk 24+ and rejects anything lower at upload.
         run: |
           set -e
           sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle
           sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle
-          sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle
+          sed -i 's/minSdkVersion = 22/minSdkVersion = 24/' android/variables.gradle
           sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.7.2'/" android/build.gradle
           sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
           grep -q "compileSdkVersion = 35" android/variables.gradle
-          grep -q "minSdkVersion = 23" android/variables.gradle
+          grep -q "minSdkVersion = 24" android/variables.gradle
           grep -q "gradle:8.7.2" android/build.gradle
           grep -q "gradle-8.9-all.zip" android/gradle/wrapper/gradle-wrapper.properties
-          echo "compileSdk/AGP/Gradle/minSdk bumped to 35 / 8.7.2 / 8.9 / 23"
+          echo "compileSdk/AGP/Gradle/minSdk bumped to 35 / 8.7.2 / 8.9 / 24"
 
       - name: Generate App Icons
         run: |
