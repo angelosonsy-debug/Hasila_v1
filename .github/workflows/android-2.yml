@@ -1,0 +1,388 @@
+# -----------------------------------------------------------------------
+# حصيلتي — CI / Release
+#
+# Job 1 (ci):  every push to main and every PR.
+#   install (npm ci, lockfile-enforced) → test → build → debug APK.
+#   Artifact: downloadable debug APK for device testing.
+#
+# Job 2 (release):  only on git tags matching v* (e.g. v1.2.3).
+#   Requires Job 1 to pass first, then adds release signing.
+#   Artifact: signed AAB ready for Google Play.
+#
+#   Required GitHub Secrets (Settings → Secrets → Actions):
+#     KEYSTORE_BASE64    – base64-encoded .jks upload keystore
+#     KEYSTORE_PASSWORD  – keystore store password
+#     KEY_ALIAS          – key alias inside the .jks
+#     KEY_PASSWORD       – key password
+#
+# Node pinned to 24 LTS (Active LTS, supported until April 2028).
+# Node 20 reached EOL in April 2025 and is no longer used here.
+#
+# Security note: npm audit reports 4 findings (critical/high in tar and
+# vite, both dev-build-time only, not in the shipped APK).
+# See SECURITY.md for full analysis. Fix requires Capacitor 8 + Vite 8
+# migration (tracked as Phase C).
+# -----------------------------------------------------------------------
+
+name: CI / Release
+
+on:
+  push:
+    branches: [main]
+    tags:     ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+
+  # -----------------------------------------------------------------
+  # CI: install → test → build → debug APK
+  # -----------------------------------------------------------------
+  ci:
+    name: CI (test + debug build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Clean install (npm ci — reproducible from lockfile)
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build web app
+        run: npm run build
+        env:
+          # Debug APKs use Google's test ad unit so live ads are never clicked in testing
+          VITE_ADMOB_TESTING: "true"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Bump compileSdk/targetSdk/AGP/Gradle/minSdk for Play Console's current requirements
+        # @capacitor-community/admob pulls in play-services-ads, which
+        # transitively resolves to androidx.core(-ktx) 1.15.0 regardless of
+        # the androidxCoreKTXVersion admob itself declares (Gradle picks the
+        # highest version among all transitive deps) - and that artifact's
+        # AAR metadata requires compiling against API 35+. Capacitor 6's
+        # template still defaults to compileSdk 34 and ships AGP 8.2.1,
+        # whose own max *supported* compileSdk is 34, so compileSdk alone
+        # can't just be bumped - AGP and the Gradle wrapper have to move
+        # together to versions that actually support a higher API.
+        #
+        # Play Console itself now hard-requires targetSdk 36+ at upload time
+        # (its own "must target API level 36+" check, independent of any
+        # library), so compileSdk has to go to 36 too (compileSdk can never
+        # be lower than targetSdk). AGP 8.7.2 doesn't support compileSdk 36 -
+        # that needs AGP 8.9.1+, which in turn needs Gradle 8.11.1+.
+        #
+        # Separately, cordova-plugin-purchase pulls in
+        # com.android.billingclient:billing 9.0.0, whose own AndroidManifest
+        # declares minSdkVersion 23 - higher than Capacitor 6's template
+        # default of minSdkVersion 22. The manifest merger fails the build
+        # if the app's minSdk is lower than a library's, so minSdk has to
+        # move up too. We go straight to 24 (Android 7.0+, ~99% of active
+        # devices) rather than stopping at 23, because Play Console's
+        # upload-time check for its "automatic app protection" feature
+        # (tamper/integrity protection added to the AAB at publish time)
+        # itself requires minSdk 24+ and rejects anything lower at upload.
+        run: |
+          set -e
+          sed -i 's/compileSdkVersion = 34/compileSdkVersion = 36/' android/variables.gradle
+          sed -i 's/targetSdkVersion = 34/targetSdkVersion = 36/' android/variables.gradle
+          sed -i 's/minSdkVersion = 22/minSdkVersion = 24/' android/variables.gradle
+          sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.9.1'/" android/build.gradle
+          sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11.1-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+          grep -q "compileSdkVersion = 36" android/variables.gradle
+          grep -q "minSdkVersion = 24" android/variables.gradle
+          grep -q "gradle:8.9.1" android/build.gradle
+          grep -q "gradle-8.11.1-all.zip" android/gradle/wrapper/gradle-wrapper.properties
+          echo "compileSdk/targetSdk/AGP/Gradle/minSdk bumped to 36 / 36 / 8.9.1 / 8.11.1 / 24"
+
+      - name: Generate App Icons
+        run: |
+          npm install sharp
+          node scripts/generate-icons.mjs
+
+      - name: Patch AndroidManifest — AdMob App ID
+        run: |
+          python3 - << 'PYEOF'
+          import sys
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path) as f:
+              content = f.read()
+          if "APPLICATION_ID" in content:
+              print("AdMob meta-data already present — skipping")
+              sys.exit(0)
+          meta = '        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-1668741011095023~9376063574"/>'
+          # Insert before the first <activity tag — safely inside <application>
+          # after all its attributes have closed, never mid-tag.
+          if "<activity" not in content:
+              print("ERROR: could not find <activity> in manifest", file=sys.stderr)
+              sys.exit(1)
+          content = content.replace("<activity", meta + "\n\n        <activity", 1)
+          with open(path, "w") as f:
+              f.write(content)
+          print("AdMob meta-data injected successfully")
+          PYEOF
+
+      - name: Add home-screen widget (native files + manifest receiver)
+        run: |
+          set -e
+          PKG_DIR="android/app/src/main/java/com/hasila/vocab"
+          mkdir -p "$PKG_DIR" android/app/src/main/res/xml
+          cp widget-source/kotlin/HasilaWidgetProvider.kt "$PKG_DIR/HasilaWidgetProvider.kt"
+          cp widget-source/res/layout/widget_hasila.xml android/app/src/main/res/layout/widget_hasila.xml
+          cp widget-source/res/xml/hasila_widget_info.xml android/app/src/main/res/xml/hasila_widget_info.xml
+          cp widget-source/res/drawable/widget_background.xml android/app/src/main/res/drawable/widget_background.xml
+          python3 - << 'PYEOF'
+          import sys
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path) as f:
+              content = f.read()
+          if "HasilaWidgetProvider" in content:
+              print("Widget receiver already present — skipping")
+              sys.exit(0)
+          receiver = '''        <receiver android:name=".HasilaWidgetProvider" android:exported="true">
+              <intent-filter>
+                  <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+              </intent-filter>
+              <meta-data android:name="android.appwidget.provider" android:resource="@xml/hasila_widget_info" />
+          </receiver>'''
+          if "<activity" not in content:
+              print("ERROR: could not find <activity> in manifest", file=sys.stderr)
+              sys.exit(1)
+          content = content.replace("<activity", receiver + "\n\n        <activity", 1)
+          with open(path, "w") as f:
+              f.write(content)
+          print("Widget receiver injected successfully")
+          PYEOF
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Set versionCode and versionName (CI)
+        # versionCode used to be derived from a Unix timestamp
+        # ($(date +%s)/10), which produces a huge, ever-growing number
+        # (hundreds of millions) on every single run. Play Console warns
+        # about this ("much higher than your previous version code") because
+        # versionCode is a 32-bit int capped at 2100000000 - burning through
+        # it at timestamp speed would exhaust it eventually. run_number is a
+        # small integer GitHub increments by exactly 1 per workflow run, so
+        # it stays low and monotonic, which is what Play actually expects.
+        run: |
+          # Offset above 180000000 because an earlier failed upload attempt
+          # already burned versionCode 179375586 on Play's side - once Play
+          # has seen a versionCode for this app (even on a discarded/failed
+          # release), it can never be reused. The offset just needs to clear
+          # that old number; run_number keeps incrementing by 1 from there,
+          # leaving ~1.9 billion future runs of headroom before the real cap.
+          VERSION_CODE=$(( 180000000 + ${{ github.run_number }} ))
+          VERSION_NAME="1.0.$(date +%Y-%m-%d)"
+          sed -i "s/versionCode .*/versionCode $VERSION_CODE/" android/app/build.gradle
+          sed -i "s/versionName .*/versionName \"$VERSION_NAME\"/" android/app/build.gradle
+          echo "versionCode=$VERSION_CODE  versionName=$VERSION_NAME"
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hasila-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+  # -----------------------------------------------------------------
+  # Release: signed AAB for Google Play (v* tags only)
+  # -----------------------------------------------------------------
+  release:
+    name: Release (signed AAB)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Clean install
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Bump compileSdk/targetSdk/AGP/Gradle/minSdk for Play Console's current requirements
+        # @capacitor-community/admob pulls in play-services-ads, which
+        # transitively resolves to androidx.core(-ktx) 1.15.0 regardless of
+        # the androidxCoreKTXVersion admob itself declares (Gradle picks the
+        # highest version among all transitive deps) - and that artifact's
+        # AAR metadata requires compiling against API 35+. Capacitor 6's
+        # template still defaults to compileSdk 34 and ships AGP 8.2.1,
+        # whose own max *supported* compileSdk is 34, so compileSdk alone
+        # can't just be bumped - AGP and the Gradle wrapper have to move
+        # together to versions that actually support a higher API.
+        #
+        # Play Console itself now hard-requires targetSdk 36+ at upload time
+        # (its own "must target API level 36+" check, independent of any
+        # library), so compileSdk has to go to 36 too (compileSdk can never
+        # be lower than targetSdk). AGP 8.7.2 doesn't support compileSdk 36 -
+        # that needs AGP 8.9.1+, which in turn needs Gradle 8.11.1+.
+        #
+        # Separately, cordova-plugin-purchase pulls in
+        # com.android.billingclient:billing 9.0.0, whose own AndroidManifest
+        # declares minSdkVersion 23 - higher than Capacitor 6's template
+        # default of minSdkVersion 22. The manifest merger fails the build
+        # if the app's minSdk is lower than a library's, so minSdk has to
+        # move up too. We go straight to 24 (Android 7.0+, ~99% of active
+        # devices) rather than stopping at 23, because Play Console's
+        # upload-time check for its "automatic app protection" feature
+        # (tamper/integrity protection added to the AAB at publish time)
+        # itself requires minSdk 24+ and rejects anything lower at upload.
+        run: |
+          set -e
+          sed -i 's/compileSdkVersion = 34/compileSdkVersion = 36/' android/variables.gradle
+          sed -i 's/targetSdkVersion = 34/targetSdkVersion = 36/' android/variables.gradle
+          sed -i 's/minSdkVersion = 22/minSdkVersion = 24/' android/variables.gradle
+          sed -i "s/classpath 'com.android.tools.build:gradle:8.2.1'/classpath 'com.android.tools.build:gradle:8.9.1'/" android/build.gradle
+          sed -i 's#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11.1-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+          grep -q "compileSdkVersion = 36" android/variables.gradle
+          grep -q "minSdkVersion = 24" android/variables.gradle
+          grep -q "gradle:8.9.1" android/build.gradle
+          grep -q "gradle-8.11.1-all.zip" android/gradle/wrapper/gradle-wrapper.properties
+          echo "compileSdk/targetSdk/AGP/Gradle/minSdk bumped to 36 / 36 / 8.9.1 / 8.11.1 / 24"
+
+      - name: Generate App Icons
+        run: |
+          npm install sharp
+          node scripts/generate-icons.mjs
+
+      - name: Patch AndroidManifest — AdMob App ID
+        run: |
+          python3 - << 'PYEOF'
+          import sys
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path) as f:
+              content = f.read()
+          if "APPLICATION_ID" in content:
+              print("AdMob meta-data already present — skipping")
+              sys.exit(0)
+          meta = '        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-1668741011095023~9376063574"/>'
+          if "<activity" not in content:
+              print("ERROR: could not find <activity> in manifest", file=sys.stderr)
+              sys.exit(1)
+          content = content.replace("<activity", meta + "\n\n        <activity", 1)
+          with open(path, "w") as f:
+              f.write(content)
+          print("AdMob meta-data injected successfully")
+          PYEOF
+
+      - name: Add home-screen widget (native files + manifest receiver)
+        run: |
+          set -e
+          PKG_DIR="android/app/src/main/java/com/hasila/vocab"
+          mkdir -p "$PKG_DIR" android/app/src/main/res/xml
+          cp widget-source/kotlin/HasilaWidgetProvider.kt "$PKG_DIR/HasilaWidgetProvider.kt"
+          cp widget-source/res/layout/widget_hasila.xml android/app/src/main/res/layout/widget_hasila.xml
+          cp widget-source/res/xml/hasila_widget_info.xml android/app/src/main/res/xml/hasila_widget_info.xml
+          cp widget-source/res/drawable/widget_background.xml android/app/src/main/res/drawable/widget_background.xml
+          python3 - << 'PYEOF'
+          import sys
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path) as f:
+              content = f.read()
+          if "HasilaWidgetProvider" in content:
+              print("Widget receiver already present — skipping")
+              sys.exit(0)
+          receiver = '''        <receiver android:name=".HasilaWidgetProvider" android:exported="true">
+              <intent-filter>
+                  <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+              </intent-filter>
+              <meta-data android:name="android.appwidget.provider" android:resource="@xml/hasila_widget_info" />
+          </receiver>'''
+          if "<activity" not in content:
+              print("ERROR: could not find <activity> in manifest", file=sys.stderr)
+              sys.exit(1)
+          content = content.replace("<activity", receiver + "\n\n        <activity", 1)
+          with open(path, "w") as f:
+              f.write(content)
+          print("Widget receiver injected successfully")
+          PYEOF
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Set versionCode and versionName from tag
+        # Same run_number-based versionCode as the debug build (see the CI
+        # job's "Set versionCode and versionName" step for why) - small,
+        # monotonically increasing per workflow run, so every new tag gets
+        # a versionCode higher than the last one Play Console has on file.
+        run: |
+          TAG="${GITHUB_REF##refs/tags/v}"
+          # Same 180000000 offset as the CI job - see its comment for why.
+          VERSION_CODE=$(( 180000000 + ${{ github.run_number }} ))
+          sed -i "s/versionCode .*/versionCode $VERSION_CODE/" android/app/build.gradle
+          sed -i "s/versionName .*/versionName \"$TAG\"/" android/app/build.gradle
+          echo "versionCode=$VERSION_CODE  versionName=$TAG"
+
+      - name: Decode keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.jks
+
+      - name: Build release AAB (signed)
+        working-directory: android
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew bundleRelease \
+            -Pandroid.injected.signing.store.file="$KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD" \
+            --stacktrace
+
+      - name: Upload signed AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: hasila-release-${{ github.ref_name }}
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 90
